@@ -9,7 +9,7 @@ import json
 import sqlite3
 import os
 from datetime import datetime
-from trade_db import DB_PATH
+from trade_db import DB_PATH, get_live_state
 from live_feed import get_live_nifty_spot
 
 PORT = 8080
@@ -225,7 +225,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
 
         .leg-val {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 700;
             font-family: 'JetBrains Mono', monospace;
         }
@@ -323,7 +323,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="stat-sub">Compounded monthly alpha</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Win Rate (22 Days)</div>
+            <div class="stat-label">Win Rate</div>
             <div id="stat-winrate" class="stat-num mono">--%</div>
             <div id="stat-ratio" class="stat-sub">-- Wins / -- Losses</div>
         </div>
@@ -337,8 +337,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="dashboard-body">
         <div class="section-box">
             <div class="section-header">
-                <div class="section-title">📈 Compounded Equity Growth (₹50,000 → ₹58,264)</div>
-                <div style="font-size: 12px; color: var(--text-muted);">Last 22 Sessions</div>
+                <div class="section-title">📈 Compounded Equity Growth</div>
+                <div style="font-size: 12px; color: var(--text-muted);">Verified Sessions</div>
             </div>
             <div class="chart-container" id="chart-box">
                 <svg class="equity-chart" id="svg-chart" viewBox="0 0 700 200" preserveAspectRatio="none">
@@ -349,13 +349,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         <div class="section-box">
             <div class="section-header">
-                <div class="section-title">🎯 Active Straddle Engine</div>
-                <div class="badge-live" style="background: rgba(59,130,246,0.15); color: #60A5FA; border-color: rgba(59,130,246,0.3);">30% SL + BE</div>
+                <div class="section-title">🎯 Live Today's Straddle Engine</div>
+                <div class="badge-live" id="live-badge-state" style="background: rgba(59,130,246,0.15); color: #60A5FA; border-color: rgba(59,130,246,0.3);">30% SL + BE</div>
             </div>
-            <div style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
+            <div style="font-size: 13px; color: var(--text-muted); line-height: 1.6;" id="live-pos-meta">
                 Strategy: <strong>09:25 AM NIFTY Short Straddle</strong><br>
-                Mode: <span class="positive">Automated Background Execution</span><br>
-                Next Trigger Window: <strong>09:25:00 IST</strong>
+                ATM Strike: <strong id="live-strike" class="mono">Waiting for 09:25 IST</strong><br>
+                Live Unrealized Gross P&L: <strong id="live-upnl" class="mono">₹0.00</strong>
             </div>
 
             <div class="pos-grid">
@@ -416,6 +416,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 document.getElementById('stat-winrate').innerText = data.win_rate.toFixed(1) + '%';
                 document.getElementById('stat-ratio').innerText = data.wins + ' Wins / ' + data.losses + ' Losses';
                 document.getElementById('stat-charges').innerText = '₹' + data.charges.toLocaleString('en-IN', {minimumFractionDigits: 1});
+
+                // Live Position State
+                if (data.live_state) {
+                    const ls = data.live_state;
+                    document.getElementById('live-badge-state').innerText = ls.state;
+                    document.getElementById('live-strike').innerText = `${ls.atm_strike} (Entry Spot: ${ls.spot_entry.toFixed(1)})`;
+                    const upnlEl = document.getElementById('live-upnl');
+                    upnlEl.innerText = (ls.unrealized_pnl >= 0 ? '+₹' : '-₹') + Math.abs(ls.unrealized_pnl).toFixed(2);
+                    upnlEl.className = 'mono ' + (ls.unrealized_pnl >= 0 ? 'positive' : 'negative');
+
+                    document.getElementById('disp-ce-val').innerText = `₹${ls.curr_ce.toFixed(1)} (Sold: ₹${ls.ce_entry.toFixed(1)})`;
+                    const ceSt = document.getElementById('disp-ce-status');
+                    ceSt.innerText = ls.ce_status;
+                    ceSt.className = 'leg-status ' + (ls.ce_status.includes('HIT') ? 'tag-loss' : 'tag-win');
+
+                    document.getElementById('disp-pe-val').innerText = `₹${ls.curr_pe.toFixed(1)} (Sold: ₹${ls.pe_entry.toFixed(1)})`;
+                    const peSt = document.getElementById('disp-pe-status');
+                    peSt.innerText = ls.pe_status;
+                    peSt.className = 'leg-status ' + (ls.pe_status.includes('HIT') ? 'tag-loss' : 'tag-win');
+                }
 
                 // Populate Trade Table
                 const tbody = document.getElementById('trade-rows');
@@ -542,7 +562,72 @@ class QuantHandler(http.server.SimpleHTTPRequestHandler):
             return_pct = ((capital - 50000.0) / 50000.0 * 100.0)
 
             live_spot = get_live_nifty_spot()
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S IST")
+            live_state = get_live_state()
+            now = datetime.now()
+            now_str = now.strftime("%Y-%m-%d %H:%M:%S IST")
+            today_str = now.strftime("%Y-%m-%d")
+
+            # If live_state is not yet in DB for today, derive live position from today's order_audit_log
+            if not live_state or live_state.get("trade_date") != today_str:
+                conn = sqlite3.connect(DB_PATH)
+                cur = conn.cursor()
+                cur.execute("""
+                SELECT timestamp, action, message, spot_price
+                FROM order_audit_log
+                WHERE timestamp LIKE ?
+                ORDER BY id ASC
+                """, (f"{today_str}%",))
+                audit_rows = cur.fetchall()
+                conn.close()
+
+                if audit_rows:
+                    from options_model import calculate_option_price, get_atm_strike
+                    entry_row = next((r for r in audit_rows if r[1] == "ENTRY"), None)
+                    if entry_row:
+                        spot_entry = float(entry_row[3])
+                        atm_strike = get_atm_strike(spot_entry, step=50)
+                        base_tte = 2.0 / 365.0
+                        ce_entry = calculate_option_price(spot_entry, atm_strike, base_tte, option_type="CE")["price"]
+                        pe_entry = calculate_option_price(spot_entry, atm_strike, base_tte, option_type="PE")["price"]
+                        ce_sl = round(ce_entry * 1.30, 2)
+                        pe_sl = round(pe_entry * 1.30, 2)
+
+                        mins_past_open = max(0, (now.hour - 9) * 60 + (now.minute - 15))
+                        tte = max(0.0001, base_tte - (mins_past_open / (375.0 * 365.0)))
+                        curr_ce = calculate_option_price(live_spot, atm_strike, tte, option_type="CE")["price"]
+                        curr_pe = calculate_option_price(live_spot, atm_strike, tte, option_type="PE")["price"]
+
+                        ce_status = f"ACTIVE (SL: ₹{ce_sl:.1f})"
+                        pe_status = f"ACTIVE (SL: ₹{pe_sl:.1f})"
+                        state_label = "ENTERED (LIVE)"
+
+                        for r in audit_rows:
+                            if r[1] == "SL_HIT" and "Call" in r[2]:
+                                ce_status = f"SL HIT ({r[2].split('at ')[-1]})"
+                                pe_status = f"ACTIVE (BE SL: ₹{pe_entry:.1f})"
+                            elif r[1] == "SL_HIT" and "Put" in r[2]:
+                                pe_status = f"SL HIT ({r[2].split('at ')[-1]})"
+                                ce_status = f"ACTIVE (BE SL: ₹{ce_entry:.1f})"
+                            elif r[1] == "EXIT":
+                                state_label = "SQUARED OFF"
+
+                        unrealized = round(((ce_entry - curr_ce) + (pe_entry - curr_pe)) * 50, 2)
+                        live_state = {
+                            "state": state_label,
+                            "trade_date": today_str,
+                            "atm_strike": atm_strike,
+                            "spot_entry": spot_entry,
+                            "current_spot": live_spot,
+                            "ce_entry": ce_entry,
+                            "curr_ce": curr_ce,
+                            "ce_sl": ce_sl,
+                            "ce_status": ce_status,
+                            "pe_entry": pe_entry,
+                            "curr_pe": curr_pe,
+                            "pe_sl": pe_sl,
+                            "pe_status": pe_status,
+                            "unrealized_pnl": unrealized
+                        }
 
             response_payload = {
                 "server_time": now_str,
@@ -557,7 +642,8 @@ class QuantHandler(http.server.SimpleHTTPRequestHandler):
                 "gross_pnl": round(gross_sum, 2),
                 "charges": round(charges_sum, 2),
                 "equity_points": equity_points,
-                "trades": trades_list
+                "trades": trades_list,
+                "live_state": live_state
             }
             self.wfile.write(json.dumps(response_payload).encode("utf-8"))
         else:

@@ -16,7 +16,7 @@ from datetime import datetime
 from options_model import calculate_option_price, get_atm_strike
 from friction import calculate_option_trade_costs
 from live_feed import get_live_nifty_spot
-from trade_db import log_audit, save_daily_trade, get_performance_summary
+from trade_db import log_audit, save_daily_trade, get_performance_summary, update_live_state
 from data_feed import fetch_candles
 
 LOT_SIZE = 25  # 1 lot Nifty
@@ -61,7 +61,27 @@ class PaperTradingDaemon:
 
         self.ce_active = True
         self.pe_active = True
+        self.ce_status = f"ACTIVE (SL: ₹{self.ce_sl:.1f})"
+        self.pe_status = f"ACTIVE (SL: ₹{self.pe_sl:.1f})"
         self.state = "ENTERED"
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        update_live_state({
+            "state": "ENTERED",
+            "trade_date": today_str,
+            "atm_strike": self.atm_strike,
+            "spot_entry": spot,
+            "current_spot": spot,
+            "ce_entry": self.ce_entry,
+            "curr_ce": self.ce_entry,
+            "ce_sl": self.ce_sl,
+            "ce_status": self.ce_status,
+            "pe_entry": self.pe_entry,
+            "curr_pe": self.pe_entry,
+            "pe_sl": self.pe_sl,
+            "pe_status": self.pe_status,
+            "unrealized_pnl": 0.0
+        })
 
         log_audit("ENTRY", f"Entered {self.lots} Lots Short Straddle at {self.atm_strike} (CE: ₹{self.ce_entry}, PE: ₹{self.pe_entry})", spot)
         print("=" * 85)
@@ -92,6 +112,7 @@ class PaperTradingDaemon:
             # QUANT TWEAK: Move remaining Put stop to Breakeven (Cost Price) ONLY if current PE is below entry
             if self.pe_active and curr_pe < self.pe_entry:
                 self.pe_sl = self.pe_entry
+                self.pe_status = f"ACTIVE (BE SL: ₹{self.pe_sl:.1f})"
                 print(f"[{current_time}] 🛡️ QUANT TWEAK APPLIED: Moved remaining PUT Stop-Loss to Breakeven (₹{self.pe_sl:.2f})")
 
         # 2. Check PE Stop Loss
@@ -105,7 +126,30 @@ class PaperTradingDaemon:
             # QUANT TWEAK: Move remaining Call stop to Breakeven ONLY if current CE is below entry
             if self.ce_active and curr_ce < self.ce_entry:
                 self.ce_sl = self.ce_entry
+                self.ce_status = f"ACTIVE (BE SL: ₹{self.ce_sl:.1f})"
                 print(f"[{current_time}] 🛡️ QUANT TWEAK APPLIED: Moved remaining CALL Stop-Loss to Breakeven (₹{self.ce_sl:.2f})")
+
+        # Calculate live unrealized PnL
+        eff_ce = curr_ce if self.ce_active else self.ce_exit_price
+        eff_pe = curr_pe if self.pe_active else self.pe_exit_price
+        live_gross = ((self.ce_entry - eff_ce) + (self.pe_entry - eff_pe)) * self.total_qty
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        update_live_state({
+            "state": "ENTERED",
+            "trade_date": today_str,
+            "atm_strike": self.atm_strike,
+            "spot_entry": self.spot_entry,
+            "current_spot": current_spot,
+            "ce_entry": self.ce_entry,
+            "curr_ce": eff_ce,
+            "ce_sl": self.ce_sl,
+            "ce_status": self.ce_status,
+            "pe_entry": self.pe_entry,
+            "curr_pe": eff_pe,
+            "pe_sl": self.pe_sl,
+            "pe_status": self.pe_status,
+            "unrealized_pnl": round(live_gross, 2)
+        })
 
         # 3. Square-off Check: If both legs are already closed OR cutoff time reached
         cutoff = "14:15" if is_expiry else "15:15"
@@ -156,6 +200,22 @@ class PaperTradingDaemon:
             "exit_time": self.exit_time
         }
         save_daily_trade(record)
+        update_live_state({
+            "state": "SQUARED_OFF",
+            "trade_date": today_str,
+            "atm_strike": self.atm_strike,
+            "spot_entry": self.spot_entry,
+            "current_spot": current_spot,
+            "ce_entry": self.ce_entry,
+            "curr_ce": self.ce_exit_price,
+            "ce_sl": self.ce_sl,
+            "ce_status": self.ce_status,
+            "pe_entry": self.pe_entry,
+            "curr_pe": self.pe_exit_price,
+            "pe_sl": self.pe_sl,
+            "pe_status": self.pe_status,
+            "unrealized_pnl": net_pnl
+        })
         log_audit("EXIT", f"Square-off completed. Net PnL: ₹{net_pnl}", current_spot)
 
         print("\n" + "=" * 85)

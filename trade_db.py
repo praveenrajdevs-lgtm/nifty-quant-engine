@@ -1,6 +1,6 @@
 """
 Trade Persistence Engine (SQLite)
-Stores real-time paper trades, order executions, daily PnL, and audit logs.
+Stores real-time paper trades, live active position state, order executions, daily PnL, and audit logs.
 """
 import sqlite3
 import os
@@ -41,8 +41,80 @@ def init_db():
         spot_price REAL
     )
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS live_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        state TEXT,
+        trade_date TEXT,
+        atm_strike INTEGER,
+        spot_entry REAL,
+        current_spot REAL,
+        ce_entry REAL,
+        curr_ce REAL,
+        ce_sl REAL,
+        ce_status TEXT,
+        pe_entry REAL,
+        curr_pe REAL,
+        pe_sl REAL,
+        pe_status TEXT,
+        unrealized_pnl REAL,
+        updated_at TEXT
+    )
+    """)
     conn.commit()
     conn.close()
+
+def update_live_state(data: dict):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""
+    INSERT OR REPLACE INTO live_state (
+        id, state, trade_date, atm_strike, spot_entry, current_spot,
+        ce_entry, curr_ce, ce_sl, ce_status,
+        pe_entry, curr_pe, pe_sl, pe_status,
+        unrealized_pnl, updated_at
+    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        data["state"], data["trade_date"], data["atm_strike"], data["spot_entry"], data["current_spot"],
+        data["ce_entry"], data["curr_ce"], data["ce_sl"], data["ce_status"],
+        data["pe_entry"], data["curr_pe"], data["pe_sl"], data["pe_status"],
+        data["unrealized_pnl"], now_str
+    ))
+    conn.commit()
+    conn.close()
+
+def get_live_state():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT state, trade_date, atm_strike, spot_entry, current_spot,
+           ce_entry, curr_ce, ce_sl, ce_status,
+           pe_entry, curr_pe, pe_sl, pe_status,
+           unrealized_pnl, updated_at
+    FROM live_state WHERE id = 1
+    """)
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "state": row[0],
+        "trade_date": row[1],
+        "atm_strike": row[2],
+        "spot_entry": row[3],
+        "current_spot": row[4],
+        "ce_entry": row[5],
+        "curr_ce": row[6],
+        "ce_sl": row[7],
+        "ce_status": row[8],
+        "pe_entry": row[9],
+        "curr_pe": row[10],
+        "pe_sl": row[11],
+        "pe_status": row[12],
+        "unrealized_pnl": row[13],
+        "updated_at": row[14]
+    }
 
 def log_audit(action: str, message: str, spot_price: float = 0.0):
     conn = sqlite3.connect(DB_PATH)
