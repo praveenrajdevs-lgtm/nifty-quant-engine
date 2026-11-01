@@ -23,7 +23,11 @@ import {
   Zap,
   Info,
   DollarSign,
-  PieChart
+  PieChart,
+  Building2,
+  Crown,
+  Scale,
+  Sparkles
 } from "lucide-react";
 import {
   Card,
@@ -176,18 +180,19 @@ interface DashboardPayload {
   strategies: Record<string, StrategyBundle>;
 }
 
-// High-performing modern & institutional quant strategies + PR Sundar strategies
-const CORE_STRATEGIES = [
+// Completely Separated Strategy Groups: Institutional Prop Desk vs P R Sundar Suite
+export const INSTITUTIONAL_STRATEGIES = [
   "inst_master_book",
   "inst_vrp_strangle",
   "inst_delta_rebalance",
   "inst_skew_condor",
-  "inst_expiry_magnet",
+  "inst_expiry_magnet"
+] as const;
+
+export const PR_SUNDAR_STRATEGIES = [
   "dynamic_pr_sundar",
-  "combined",
   "pr_sundar",
-  "institutional",
-  "rolling_straddle",
+  "combined",
   "oh_ol_wall"
 ] as const;
 
@@ -232,16 +237,6 @@ const STRATEGY_LABELS: Record<string, { name: string; tag: string; desc: string 
     tag: "Positional Core",
     desc: "OTM ±100 Friday entry with untested-leg roll (50% decay trigger) & +44% SL",
   },
-  institutional: {
-    name: "Institutional Intraday Adaptive (#6)",
-    tag: "Zero Overnight",
-    desc: "Intraday regime-switching straddle/strangle with 1 re-entry on cost",
-  },
-  rolling_straddle: {
-    name: "Institutional Rolling Straddle (#7)",
-    tag: "Delta-Neutral",
-    desc: "ATM Straddle re-centering whenever Nifty moves ±100 pts",
-  },
   oh_ol_wall: {
     name: "09:30 Open=High/Low Wall Seller",
     tag: "Tactical Alpha",
@@ -249,21 +244,23 @@ const STRATEGY_LABELS: Record<string, { name: string; tag: string; desc: string 
   },
 };
 
-type ViewMode = "overview" | "comparison" | "brain" | "ledger";
+type ViewMode = "institutional" | "pr_sundar" | "comparison" | "brain" | "ledger";
 
 export default function App() {
   const [data, setData] = useState<DashboardPayload | null>(null);
-  const [activeView, setActiveView] = useState<ViewMode>("overview");
+  const [activeView, setActiveView] = useState<ViewMode>("institutional");
   
   // Strategy selection
-  const [selectedStrategy, setSelectedStrategy] = useState<string>("dynamic_pr_sundar");
+  const [institutionalStrat, setInstitutionalStrat] = useState<string>("inst_master_book");
+  const [prSundarStrat, setPrSundarStrat] = useState<string>("dynamic_pr_sundar");
   
   // Head-to-Head Compare selections
-  const [compareA, setCompareA] = useState<string>("dynamic_pr_sundar");
-  const [compareB, setCompareB] = useState<string>("pr_sundar");
+  const [compareA, setCompareA] = useState<string>("inst_master_book");
+  const [compareB, setCompareB] = useState<string>("dynamic_pr_sundar");
 
   // Ledger Filter
   const [tradeFilter, setTradeFilter] = useState<"all" | "win" | "loss">("all");
+  const [ledgerDeskFilter, setLedgerDeskFilter] = useState<"all" | "institutional" | "pr_sundar">("all");
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // PR Sundar Brain state
@@ -331,19 +328,25 @@ export default function App() {
     return () => clearInterval(timer);
   }, []);
 
+  const activeStrategyKey = useMemo(() => {
+    if (activeView === "institutional") return institutionalStrat;
+    if (activeView === "pr_sundar") return prSundarStrat;
+    return institutionalStrat;
+  }, [activeView, institutionalStrat, prSundarStrat]);
+
   const activeBundle: StrategyBundle | null = useMemo(() => {
     if (!data) return null;
-    return data.strategies[selectedStrategy] || data.strategies.dynamic_pr_sundar || data.strategies.combined;
-  }, [data, selectedStrategy]);
+    return data.strategies[activeStrategyKey] || data.strategies.inst_master_book || data.strategies.dynamic_pr_sundar;
+  }, [data, activeStrategyKey]);
 
   const bundleA = useMemo(() => {
     if (!data) return null;
-    return data.strategies[compareA] || data.strategies.dynamic_pr_sundar;
+    return data.strategies[compareA] || data.strategies.inst_master_book;
   }, [data, compareA]);
 
   const bundleB = useMemo(() => {
     if (!data) return null;
-    return data.strategies[compareB] || data.strategies.pr_sundar;
+    return data.strategies[compareB] || data.strategies.dynamic_pr_sundar;
   }, [data, compareB]);
 
   const filteredTrades = useMemo(() => {
@@ -430,28 +433,66 @@ export default function App() {
       <div className="mx-auto flex w-full max-w-7xl flex-1 px-4 sm:px-6 lg:px-8 py-6 gap-6">
         {/* Navigation Sidebar */}
         <aside className="w-56 shrink-0 hidden md:flex flex-col gap-1.5">
-          <div className="px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Navigation
+          <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Trading Desks
           </div>
+          
           <button
-            onClick={() => setActiveView("overview")}
+            onClick={() => setActiveView("institutional")}
             className={cn(
-              "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-all",
-              activeView === "overview"
-                ? "bg-blue-600 text-white shadow-sm shadow-blue-600/20"
+              "flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all text-left",
+              activeView === "institutional"
+                ? "bg-gradient-to-r from-indigo-700 to-blue-700 text-white shadow-md shadow-indigo-600/25"
                 : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
             )}
           >
-            <LayoutDashboard className="h-4 w-4" />
-            <span>Dashboard Overview</span>
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10 shrink-0">
+              <Building2 className="h-4 w-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold truncate">Institutional Desk</div>
+              <div className={cn("text-[10px] truncate", activeView === "institutional" ? "text-indigo-200" : "text-slate-400")}>
+                Quant VRP & Hedging
+              </div>
+            </div>
+            <Badge variant={activeView === "institutional" ? "outline" : "secondary"} className="text-[9px] px-1 py-0 shrink-0">
+              PRO
+            </Badge>
           </button>
-          
+
+          <button
+            onClick={() => setActiveView("pr_sundar")}
+            className={cn(
+              "flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all text-left",
+              activeView === "pr_sundar"
+                ? "bg-gradient-to-r from-blue-700 to-indigo-700 text-white shadow-md shadow-blue-700/25"
+                : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            )}
+          >
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10 shrink-0">
+              <Crown className="h-4 w-4" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold truncate">P R Sundar Suite</div>
+              <div className={cn("text-[10px] truncate", activeView === "pr_sundar" ? "text-blue-200" : "text-slate-400")}>
+                Firefighting & Walls
+              </div>
+            </div>
+            <Badge variant={activeView === "pr_sundar" ? "outline" : "secondary"} className="text-[9px] px-1 py-0 shrink-0">
+              92%
+            </Badge>
+          </button>
+
+          <div className="mt-4 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Analysis & Ledger
+          </div>
+
           <button
             onClick={() => setActiveView("comparison")}
             className={cn(
               "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-all",
               activeView === "comparison"
-                ? "bg-blue-600 text-white shadow-sm shadow-blue-600/20"
+                ? "bg-slate-900 text-white shadow-sm"
                 : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
             )}
           >
@@ -464,7 +505,7 @@ export default function App() {
             className={cn(
               "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-all",
               activeView === "brain"
-                ? "bg-blue-600 text-white shadow-sm shadow-blue-600/20"
+                ? "bg-amber-600 text-white shadow-sm shadow-amber-600/20"
                 : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
             )}
           >
@@ -478,7 +519,7 @@ export default function App() {
             className={cn(
               "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-xs font-semibold transition-all",
               activeView === "ledger"
-                ? "bg-blue-600 text-white shadow-sm shadow-blue-600/20"
+                ? "bg-slate-900 text-white shadow-sm"
                 : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
             )}
           >
@@ -486,29 +527,32 @@ export default function App() {
             <span>Trade Audit Ledger</span>
           </button>
 
-          <div className="mt-6 px-3 py-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            Quick Strategy Focus
+          <div className="mt-4 px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            {activeView === "pr_sundar" ? "P R Sundar Strategies" : "Institutional Strategies"}
           </div>
           <div className="space-y-1">
-            {CORE_STRATEGIES.map((key) => {
+            {(activeView === "pr_sundar" ? PR_SUNDAR_STRATEGIES : INSTITUTIONAL_STRATEGIES).map((key) => {
               const info = STRATEGY_LABELS[key];
-              const isSelected = selectedStrategy === key;
+              const isSelected = activeStrategyKey === key;
               return (
                 <button
                   key={key}
                   onClick={() => {
-                    setSelectedStrategy(key);
-                    if (activeView !== "overview") setActiveView("overview");
+                    if (activeView === "pr_sundar") {
+                      setPrSundarStrat(key);
+                    } else {
+                      setInstitutionalStrat(key);
+                    }
                   }}
                   className={cn(
                     "w-full text-left rounded-lg p-2 text-xs transition-all border",
                     isSelected
-                      ? "border-blue-300 bg-blue-50/70 text-blue-900 font-semibold"
+                      ? "border-indigo-300 bg-indigo-50/70 text-indigo-900 font-semibold shadow-xs"
                       : "border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900"
                   )}
                 >
                   <div className="truncate font-medium">{info?.name || key}</div>
-                  <div className="text-[10px] text-slate-400">{info?.tag}</div>
+                  <div className="text-[10px] text-slate-400 truncate">{info?.tag}</div>
                 </button>
               );
             })}
@@ -543,12 +587,20 @@ export default function App() {
           {/* Mobile Tab Bar */}
           <div className="flex md:hidden overflow-x-auto gap-2 pb-3 mb-4 border-b border-slate-200">
             <Button
-              variant={activeView === "overview" ? "default" : "outline"}
+              variant={activeView === "institutional" ? "default" : "outline"}
               size="sm"
-              onClick={() => setActiveView("overview")}
+              onClick={() => setActiveView("institutional")}
               className="text-xs shrink-0"
             >
-              Overview
+              Institutional Desk
+            </Button>
+            <Button
+              variant={activeView === "pr_sundar" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setActiveView("pr_sundar")}
+              className="text-xs shrink-0"
+            >
+              P R Sundar Suite
             </Button>
             <Button
               variant={activeView === "comparison" ? "default" : "outline"}
@@ -564,7 +616,7 @@ export default function App() {
               onClick={() => setActiveView("brain")}
               className="text-xs shrink-0"
             >
-              PR Sundar Brain
+              PR Brain
             </Button>
             <Button
               variant={activeView === "ledger" ? "default" : "outline"}
@@ -576,19 +628,22 @@ export default function App() {
             </Button>
           </div>
 
-          {/* VIEW 1: OVERVIEW DASHBOARD */}
-          {activeView === "overview" && (
+          {/* VIEW 1 & 2: SEPARATED SCREENS FOR INSTITUTIONAL PROP DESK & P R SUNDAR SUITE */}
+          {(activeView === "institutional" || activeView === "pr_sundar") && (
             <div className="space-y-6 quant-containment-section">
               {/* Header Hero Card */}
               <div className="rounded-2xl border border-slate-200/90 bg-white p-6 shadow-sm">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold uppercase tracking-wider text-blue-600 font-mono">
-                        Active Strategy Telemetry
+                      <span className={cn(
+                        "text-xs font-semibold uppercase tracking-wider font-mono",
+                        activeView === "institutional" ? "text-indigo-600" : "text-blue-600"
+                      )}>
+                        {activeView === "institutional" ? "🏛️ Institutional Prop Desk Engine" : "👑 P R Sundar Veteran Suite"}
                       </span>
                       <Badge variant="outline" className="text-[10px]">
-                        {STRATEGY_LABELS[selectedStrategy]?.tag || "Verified System"}
+                        {STRATEGY_LABELS[activeStrategyKey]?.tag || "Verified System"}
                       </Badge>
                     </div>
                     <h2 className="text-xl font-bold tracking-tight text-slate-900 mt-1">
@@ -599,37 +654,125 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* Strategy Selector Pillbox */}
-                  <div className="flex flex-wrap items-center gap-1.5 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60">
-                    {CORE_STRATEGIES.map((key) => {
-                      const isSel = selectedStrategy === key;
-                      return (
-                        <button
-                          key={key}
-                          onClick={() => setSelectedStrategy(key)}
-                          className={cn(
-                            "px-2.5 py-1 text-xs font-semibold rounded-lg transition-all",
-                            isSel
-                              ? "bg-white text-slate-900 shadow-sm"
-                              : "text-slate-600 hover:text-slate-900"
-                          )}
-                        >
-                          {key === "dynamic_pr_sundar"
-                            ? "Dynamic Flagship"
-                            : key === "combined"
-                            ? "Combined"
-                            : key === "pr_sundar"
-                            ? "PR Sundar #5"
-                            : key === "institutional"
-                            ? "Intraday #6"
-                            : key === "rolling_straddle"
-                            ? "Rolling #7"
-                            : "09:30 Wall"}
-                        </button>
-                      );
-                    })}
+                  {/* Strategy Selector Pillbox Filtered Specifically for this Screen */}
+                  <div className="flex flex-wrap items-center gap-1.5 bg-slate-100/80 p-1.5 rounded-xl border border-slate-200/60">
+                    {activeView === "institutional" ? (
+                      INSTITUTIONAL_STRATEGIES.map((key) => {
+                        const isSel = activeStrategyKey === key;
+                        const shortNames: Record<string, string> = {
+                          inst_master_book: "Master Prop Book (₹4.68L)",
+                          inst_vrp_strangle: "VRP Strangle (84% Mo)",
+                          inst_delta_rebalance: "Delta-Neutral (₹1.33L)",
+                          inst_skew_condor: "Put-Skew Condor",
+                          inst_expiry_magnet: "0DTE Magnet",
+                        };
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => setInstitutionalStrat(key)}
+                            className={cn(
+                              "px-2.5 py-1 text-xs font-semibold rounded-lg transition-all",
+                              isSel
+                                ? "bg-indigo-600 text-white shadow-sm shadow-indigo-600/20"
+                                : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                            )}
+                          >
+                            {shortNames[key] || key}
+                          </button>
+                        );
+                      })
+                    ) : (
+                      PR_SUNDAR_STRATEGIES.map((key) => {
+                        const isSel = activeStrategyKey === key;
+                        const shortNames: Record<string, string> = {
+                          dynamic_pr_sundar: "Dynamic Flagship (92.3% Mo)",
+                          combined: "Combined Weekly+Intraday",
+                          pr_sundar: "Weekly Strangle (#5)",
+                          oh_ol_wall: "09:30 O=H/O=L Wall",
+                        };
+                        return (
+                          <button
+                            key={key}
+                            onClick={() => setPrSundarStrat(key)}
+                            className={cn(
+                              "px-2.5 py-1 text-xs font-semibold rounded-lg transition-all",
+                              isSel
+                                ? "bg-blue-600 text-white shadow-sm shadow-blue-600/20"
+                                : "text-slate-600 hover:text-slate-900 hover:bg-white/60"
+                            )}
+                          >
+                            {shortNames[key] || key}
+                          </button>
+                        );
+                      })
+                    )}
                   </div>
                 </div>
+
+                {/* Specific Screen Architectural Edge Callout */}
+                {activeView === "institutional" ? (
+                  <div className="mt-5 grid grid-cols-1 md:grid-cols-4 gap-3 border-t border-slate-100 pt-4 text-xs">
+                    <div className="flex items-start gap-2 bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-100/60">
+                      <Sparkles className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-indigo-950 font-semibold block text-[11px]">Variance Risk Premium</strong>
+                        <span className="text-slate-600 text-[10px]">Trades only when IV - RV ≥ +1.5%, bypassing high-vol shock months.</span>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-100/60">
+                      <Scale className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-indigo-950 font-semibold block text-[11px]">Wide Delta Bands</strong>
+                        <span className="text-slate-600 text-[10px]">Re-centers strike at ±80 pts drift, avoiding naive micro-gamma churn.</span>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-100/60">
+                      <ShieldCheck className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-indigo-950 font-semibold block text-[11px]">Defined-Risk Wings</strong>
+                        <span className="text-slate-600 text-[10px]">5-delta OTM wings slash margin to ₹45k & cap catastrophic tail loss.</span>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 bg-indigo-50/50 p-2.5 rounded-lg border border-indigo-100/60">
+                      <DollarSign className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-indigo-950 font-semibold block text-[11px]">7.0% Collateral Yield</strong>
+                        <span className="text-slate-600 text-[10px]">Pledging T-Bills earns ₹403/wk in guaranteed risk-free base yield.</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-5 grid grid-cols-1 md:grid-cols-4 gap-3 border-t border-slate-100 pt-4 text-xs">
+                    <div className="flex items-start gap-2 bg-blue-50/50 p-2.5 rounded-lg border border-blue-100/60">
+                      <Zap className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-blue-950 font-semibold block text-[11px]">09:15–09:30 Wall Trap</strong>
+                        <span className="text-slate-600 text-[10px]">Open=High (83.8% bear) / Open=Low (80.8% bull) trapped-writer alpha.</span>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 bg-blue-50/50 p-2.5 rounded-lg border border-blue-100/60">
+                      <RefreshCw className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-blue-950 font-semibold block text-[11px]">Untested-Leg Roll</strong>
+                        <span className="text-slate-600 text-[10px]">Rolls untested leg in 50 pts when it decays ≥50% (Strangle→Straddle).</span>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 bg-blue-50/50 p-2.5 rounded-lg border border-blue-100/60">
+                      <ShieldCheck className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-blue-950 font-semibold block text-[11px]">Anti-HDFC Hard SL</strong>
+                        <span className="text-slate-600 text-[10px]">+42% tested-leg circuit breaker stops runaway one-way market blowups.</span>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 bg-blue-50/50 p-2.5 rounded-lg border border-blue-100/60">
+                      <DollarSign className="h-4 w-4 text-blue-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="text-blue-950 font-semibold block text-[11px]">Bharat Bond Yield</strong>
+                        <span className="text-slate-600 text-[10px]">7.0% liquid fund pledging delivers ~₹403.85/wk steady collateral cashflow.</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* 4 Clean Metric Cards */}
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-6">
@@ -861,13 +1004,22 @@ export default function App() {
                       <select
                         value={compareA}
                         onChange={(e) => setCompareA(e.target.value)}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-blue-600 focus:outline-none"
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-indigo-600 focus:outline-none"
                       >
-                        {CORE_STRATEGIES.map((k) => (
-                          <option key={k} value={k}>
-                            {STRATEGY_LABELS[k]?.name || k}
-                          </option>
-                        ))}
+                        <optgroup label="🏛️ Institutional Prop Desk">
+                          {INSTITUTIONAL_STRATEGIES.map((k) => (
+                            <option key={k} value={k}>
+                              {STRATEGY_LABELS[k]?.name || k}
+                            </option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="👑 P R Sundar Quant Suite">
+                          {PR_SUNDAR_STRATEGIES.map((k) => (
+                            <option key={k} value={k}>
+                              {STRATEGY_LABELS[k]?.name || k}
+                            </option>
+                          ))}
+                        </optgroup>
                       </select>
                     </div>
 
@@ -878,13 +1030,22 @@ export default function App() {
                       <select
                         value={compareB}
                         onChange={(e) => setCompareB(e.target.value)}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-blue-600 focus:outline-none"
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-900 focus:border-indigo-600 focus:outline-none"
                       >
-                        {CORE_STRATEGIES.map((k) => (
-                          <option key={k} value={k}>
-                            {STRATEGY_LABELS[k]?.name || k}
-                          </option>
-                        ))}
+                        <optgroup label="👑 P R Sundar Quant Suite">
+                          {PR_SUNDAR_STRATEGIES.map((k) => (
+                            <option key={k} value={k}>
+                              {STRATEGY_LABELS[k]?.name || k}
+                            </option>
+                          ))}
+                        </optgroup>
+                        <optgroup label="🏛️ Institutional Prop Desk">
+                          {INSTITUTIONAL_STRATEGIES.map((k) => (
+                            <option key={k} value={k}>
+                              {STRATEGY_LABELS[k]?.name || k}
+                            </option>
+                          ))}
+                        </optgroup>
                       </select>
                     </div>
                   </div>
@@ -1286,31 +1447,58 @@ export default function App() {
                     </CardDescription>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      variant={tradeFilter === "all" ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setTradeFilter("all")}
-                      className="text-xs h-7"
-                    >
-                      All ({activeBundle.recent_trades.length})
-                    </Button>
-                    <Button
-                      variant={tradeFilter === "win" ? "primary" : "outline"}
-                      size="sm"
-                      onClick={() => setTradeFilter("win")}
-                      className="text-xs h-7"
-                    >
-                      Wins Only
-                    </Button>
-                    <Button
-                      variant={tradeFilter === "loss" ? "outline" : "outline"}
-                      size="sm"
-                      onClick={() => setTradeFilter("loss")}
-                      className="text-xs h-7"
-                    >
-                      Losses Only
-                    </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                      <Button
+                        variant={activeStrategyKey === "inst_master_book" ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => {
+                          setInstitutionalStrat("inst_master_book");
+                          setActiveView("institutional");
+                        }}
+                        className="text-xs h-7 px-2.5"
+                      >
+                        🏛️ Institutional Desk
+                      </Button>
+                      <Button
+                        variant={activeStrategyKey === "dynamic_pr_sundar" ? "default" : "ghost"}
+                        size="sm"
+                        onClick={() => {
+                          setPrSundarStrat("dynamic_pr_sundar");
+                          setActiveView("pr_sundar");
+                        }}
+                        className="text-xs h-7 px-2.5"
+                      >
+                        👑 PR Sundar Suite
+                      </Button>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant={tradeFilter === "all" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setTradeFilter("all")}
+                        className="text-xs h-7"
+                      >
+                        All ({activeBundle.recent_trades.length})
+                      </Button>
+                      <Button
+                        variant={tradeFilter === "win" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setTradeFilter("win")}
+                        className="text-xs h-7 text-emerald-700"
+                      >
+                        Wins Only
+                      </Button>
+                      <Button
+                        variant={tradeFilter === "loss" ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setTradeFilter("loss")}
+                        className="text-xs h-7 text-rose-700"
+                      >
+                        Losses Only
+                      </Button>
+                    </div>
                   </div>
                 </CardHeader>
                 <CardContent>
