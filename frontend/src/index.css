@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --border: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+  }
+}
+
+/* Modern Web Guidance: interactions-in-complex-layouts
+   Isolate layout/style/paint recalculations across complex dashboard panels */
+.quant-containment-section {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px auto 520px;
+}
+
+@supports not (content-visibility: auto) {
+  .quant-containment-section {
+    contain: layout style paint;
+  }
+}
+
+/* Modern Web Guidance: responsive-table
+   Container-query responsive table with sticky headers & mobile stacked cards */
+.quant-table-region {
+  overflow: auto;
+  max-inline-size: 100%;
+  max-block-size: min(560px, 78vh);
+  container-type: inline-size;
+}
+
+.quant-table-region table {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: 100%;
+}
+
+.quant-table-region thead {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 10;
+}
+
+.quant-table-region tbody th {
+  position: sticky;
+  inset-inline-start: 0;
+  background: #ffffff;
+  z-index: 5;
+}
+
+@container (width < 600px) {
+  .quant-table-region table,
+  .quant-table-region thead,
+  .quant-table-region tbody,
+  .quant-table-region tr,
+  .quant-table-region th,
+  .quant-table-region td {
+    display: block;
+  }
+
+  .quant-table-region thead {
+    display: none;
+  }
+
+  .quant-table-region tbody tr {
+    margin-block-end: 0.75rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background: #ffffff;
+  }
+
+  .quant-table-region tbody th {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: 2;
+    background: #f8fafc;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .quant-table-region td::before {
+    font-weight: 600;
+    color: #64748b;
+    margin-right: 0.5rem;
+  }
+
+  .quant-table-region td:nth-child(2)::before {
+    content: var(--label-2, "Strategy") ": ";
+  }
+  .quant-table-region td:nth-child(3)::before {
+    content: var(--label-3, "Expiry") ": ";
+  }
+  .quant-table-region td:nth-child(4)::before {
+    content: var(--label-4, "Gross P&L") ": ";
+  }
+  .quant-table-region td:nth-child(5)::before {
+    content: var(--label-5, "Charges") ": ";
+  }
+  .quant-table-region td:nth-child(6)::before {
+    content: var(--label-6, "Net P&L") ": ";
+  }
+  .quant-table-region td:nth-child(7)::before {
+    content: var(--label-7, "Result") ": ";
+  }
+}

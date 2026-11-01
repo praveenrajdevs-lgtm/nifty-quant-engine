@@ -1,659 +1,237 @@
 """
-Autonomous Trading System Web Server & Real-Time Dashboard
-Pure standard Python HTTP server (zero external dependencies).
-Serves real-time dark-mode quant terminal on http://localhost:8080.
+Clean Backend API & Static Asset Server for Antigravity Quant Engine
+Serves:
+  - GET  /api/dashboard       -> Full 2-Year (110-Week, 518-Session) Multi-Strategy Benchmark & Live Telemetry
+  - GET  /api/trades          -> Filterable Trade Ledger (?strategy=combined|pr_sundar|institutional|rolling_straddle|baseline)
+  - POST /api/recompute       -> Re-runs the 2-Year Backtest Engine and refreshes JSON cache
+  - GET  /api/status          -> Legacy status endpoint for CLI/daemon compatibility
+  - Static Frontend Assets    -> Serves built Vite + shadcn/ui Light-Theme app from frontend/dist (if built)
 """
 import http.server
-import socketserver
 import json
-import sqlite3
+import mimetypes
 import os
+import socketserver
+import sqlite3
+import urllib.parse
 from datetime import datetime
 from trade_db import DB_PATH, get_live_state
 from live_feed import get_live_nifty_spot
+from run_2year_upstox_backtest import OUTPUT_JSON, run_2year_suite
 
-PORT = 8080
+PORT = int(os.environ.get("PORT", "8080"))
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+PR_SUNDAR_JSON = os.path.join(os.path.dirname(__file__), "data_cache", "pr_sundar_brain.json")
+PR_SUNDAR_DB = os.path.join(os.path.dirname(__file__), "data_cache", "pr_sundar_brain.db")
 
-DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Antigravity Quant Terminal | NIFTY Straddle</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg: #0A0E17;
-            --surface: #121826;
-            --surface-hover: #182235;
-            --border: #1F293D;
-            --text-main: #F1F5F9;
-            --text-muted: #94A3B8;
-            --green: #10B981;
-            --green-glow: rgba(16, 185, 129, 0.15);
-            --red: #F43F5E;
-            --red-glow: rgba(244, 63, 94, 0.15);
-            --accent: #3B82F6;
-        }
 
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: var(--bg);
-            color: var(--text-main);
-            min-height: 100vh;
-            padding: 24px;
-        }
+def load_dashboard_payload() -> dict:
+    if not os.path.exists(OUTPUT_JSON):
+        return run_2year_suite()
+    with open(OUTPUT_JSON, "r") as f:
+        return json.load(f)
 
-        .mono { font-family: 'JetBrains Mono', monospace; }
 
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding-bottom: 24px;
-            border-bottom: 1px solid var(--border);
-            margin-bottom: 24px;
-            flex-wrap: wrap;
-            gap: 16px;
-        }
+def load_pr_sundar_brain() -> dict:
+    if not os.path.exists(PR_SUNDAR_JSON):
+        return {"error": "Brain index not yet generated", "videos": [], "synthesized_playbook": []}
+    with open(PR_SUNDAR_JSON, "r") as f:
+        return json.load(f)
 
-        .brand-title {
-            font-size: 20px;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            letter-spacing: -0.5px;
-        }
 
-        .badge-live {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            background: var(--green-glow);
-            color: var(--green);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            padding: 4px 10px;
-            border-radius: 999px;
-        }
+def search_pr_sundar_db(q_str: str, category: str = "all", limit: int = 40) -> list:
+    if not os.path.exists(PR_SUNDAR_DB):
+        return []
+    conn = sqlite3.connect(PR_SUNDAR_DB)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    q_clean = (q_str or "").strip()
+    cat_clean = (category or "all").strip()
 
-        .pulse-dot {
-            width: 7px;
-            height: 7px;
-            background: var(--green);
-            border-radius: 50%;
-            box-shadow: 0 0 8px var(--green);
-            animation: pulse 2s infinite;
-        }
+    rows = []
+    if q_clean:
+        like_pat = f"%{q_clean}%"
+        sql = """
+            SELECT video_id, title, publish_date, published_text, duration, views,
+                   categories, description, word_count, transcript, key_quotes_json
+            FROM videos
+            WHERE (title LIKE ? OR transcript LIKE ? OR description LIKE ? OR categories LIKE ?)
+        """
+        params = [like_pat, like_pat, like_pat, like_pat]
+        if cat_clean and cat_clean != "all":
+            sql += " AND categories LIKE ?"
+            params.append(f"%{cat_clean}%")
+        sql += " ORDER BY CASE WHEN title LIKE ? THEN 1 ELSE 0 END DESC, word_count > 0 DESC, views DESC LIMIT ?"
+        params.extend([like_pat, limit])
+        rows = cur.execute(sql, params).fetchall()
+    else:
+        sql = """
+            SELECT video_id, title, publish_date, published_text, duration, views,
+                   categories, description, word_count, transcript, key_quotes_json
+            FROM videos
+            WHERE word_count > 0
+        """
+        params = []
+        if cat_clean and cat_clean != "all":
+            sql += " AND categories LIKE ?"
+            params.append(f"%{cat_clean}%")
+        sql += " ORDER BY views DESC LIMIT ?"
+        params.append(limit)
+        rows = cur.execute(sql, params).fetchall()
 
-        @keyframes pulse {
-            0% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.4; transform: scale(1.2); }
-            100% { opacity: 1; transform: scale(1); }
-        }
+    results = []
+    for r in rows:
+        tr = r["transcript"] or ""
+        preview = tr[:650]
+        if q_clean and q_clean.lower() in tr.lower():
+            idx = tr.lower().find(q_clean.lower())
+            start = max(0, idx - 180)
+            end = min(len(tr), idx + 420)
+            preview = ("..." if start > 0 else "") + tr[start:end] + ("..." if end < len(tr) else "")
+        results.append({
+            "video_id": r["video_id"],
+            "url": f"https://www.youtube.com/watch?v={r['video_id']}",
+            "title": r["title"] or f"P R Sundar Video ({r['video_id']})",
+            "publish_date": r["publish_date"] or r["published_text"] or "",
+            "duration": r["duration"] or "",
+            "views": r["views"] or 0,
+            "categories": r["categories"].split(",") if r["categories"] else [],
+            "word_count": r["word_count"] or 0,
+            "quotes": json.loads(r["key_quotes_json"] or "[]"),
+            "transcript_preview": preview,
+        })
+    conn.close()
+    return results
 
-        .meta-group {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-            font-size: 13px;
-        }
 
-        .meta-item {
-            color: var(--text-muted);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
+class QuantAPIHandler(http.server.SimpleHTTPRequestHandler):
+    def _send_json(self, payload: dict, status: int = 200):
+        raw = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+        self.wfile.write(raw)
 
-        .meta-val {
-            color: var(--text-main);
-            font-weight: 600;
-        }
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
-        .grid-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/recompute":
+            payload = run_2year_suite()
+            self._send_json({"status": "ok", "generated_at": payload["generated_at"]})
+        else:
+            self._send_json({"error": "Not found"}, status=404)
 
-        .stat-card {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 20px;
-            transition: border-color 0.2s;
-        }
-        .stat-card:hover { border-color: rgba(59, 130, 246, 0.4); }
-
-        .stat-label {
-            font-size: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--text-muted);
-            margin-bottom: 8px;
-        }
-
-        .stat-num {
-            font-size: 26px;
-            font-weight: 700;
-            letter-spacing: -0.5px;
-        }
-
-        .stat-sub {
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-top: 6px;
-        }
-
-        .positive { color: var(--green); }
-        .negative { color: var(--red); }
-
-        .dashboard-body {
-            display: grid;
-            grid-template-columns: 2fr 1fr;
-            gap: 24px;
-            margin-bottom: 24px;
-        }
-        @media (max-width: 1024px) {
-            .dashboard-body { grid-template-columns: 1fr; }
-        }
-
-        .section-box {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            padding: 24px;
-        }
-
-        .section-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        .section-title {
-            font-size: 15px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        /* SVG Chart Styles */
-        .chart-container {
-            width: 100%;
-            height: 220px;
-            position: relative;
-        }
-
-        svg.equity-chart {
-            width: 100%;
-            height: 100%;
-            overflow: visible;
-        }
-
-        /* Active Position Widget */
-        .pos-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-            margin-top: 14px;
-        }
-
-        .leg-card {
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 14px;
-        }
-
-        .leg-title {
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-muted);
-            margin-bottom: 6px;
-        }
-
-        .leg-val {
-            font-size: 16px;
-            font-weight: 700;
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        .leg-status {
-            font-size: 11px;
-            margin-top: 6px;
-            display: inline-block;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-weight: 600;
-        }
-
-        /* Table */
-        .table-box {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: 12px;
-            overflow: hidden;
-        }
-
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-            text-align: left;
-        }
-
-        th {
-            background: rgba(15, 23, 42, 0.8);
-            color: var(--text-muted);
-            padding: 14px 18px;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 11px;
-            letter-spacing: 0.5px;
-            border-bottom: 1px solid var(--border);
-        }
-
-        td {
-            padding: 14px 18px;
-            border-bottom: 1px solid rgba(31, 41, 61, 0.5);
-            font-family: 'JetBrains Mono', monospace;
-        }
-
-        tr:hover td { background: var(--surface-hover); }
-
-        .tag-win {
-            background: var(--green-glow);
-            color: var(--green);
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-
-        .tag-loss {
-            background: var(--red-glow);
-            color: var(--red);
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-    </style>
-</head>
-<body>
-
-    <header>
-        <div class="brand-title">
-            <span>⚡ Antigravity Quant Terminal</span>
-            <span class="badge-live"><span class="pulse-dot"></span> Daemon Active</span>
-        </div>
-        <div class="meta-group">
-            <div class="meta-item">NIFTY 50 SPOT: <span id="nifty-spot" class="meta-val mono">--</span></div>
-            <div class="meta-item">SERVER TIME: <span id="server-time" class="meta-val mono">--</span></div>
-            <div class="meta-item">STATUS: <span id="daemon-state" class="meta-val positive">Autonomous 24/7</span></div>
-        </div>
-    </header>
-
-    <div class="grid-stats">
-        <div class="stat-card">
-            <div class="stat-label">Compounded Capital</div>
-            <div id="stat-capital" class="stat-num mono positive">₹--</div>
-            <div class="stat-sub">Starting Capital: ₹50,000.00</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Pure Net Profit</div>
-            <div id="stat-profit" class="stat-num mono positive">+₹--</div>
-            <div class="stat-sub">After all taxes & brokerage</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">1-Month Return</div>
-            <div id="stat-return" class="stat-num mono positive">+--%</div>
-            <div class="stat-sub">Compounded monthly alpha</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Win Rate</div>
-            <div id="stat-winrate" class="stat-num mono">--%</div>
-            <div id="stat-ratio" class="stat-sub">-- Wins / -- Losses</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Taxes & Brokerage Paid</div>
-            <div id="stat-charges" class="stat-num mono negative">₹--</div>
-            <div class="stat-sub">Zerodha + SEBI STT + GST</div>
-        </div>
-    </div>
-
-    <div class="dashboard-body">
-        <div class="section-box">
-            <div class="section-header">
-                <div class="section-title">📈 Compounded Equity Growth</div>
-                <div style="font-size: 12px; color: var(--text-muted);">Verified Sessions</div>
-            </div>
-            <div class="chart-container" id="chart-box">
-                <svg class="equity-chart" id="svg-chart" viewBox="0 0 700 200" preserveAspectRatio="none">
-                    <!-- Dynamic chart rendered here -->
-                </svg>
-            </div>
-        </div>
-
-        <div class="section-box">
-            <div class="section-header">
-                <div class="section-title">🎯 Live Today's Straddle Engine</div>
-                <div class="badge-live" id="live-badge-state" style="background: rgba(59,130,246,0.15); color: #60A5FA; border-color: rgba(59,130,246,0.3);">30% SL + BE</div>
-            </div>
-            <div style="font-size: 13px; color: var(--text-muted); line-height: 1.6;" id="live-pos-meta">
-                Strategy: <strong>09:25 AM NIFTY Short Straddle</strong><br>
-                ATM Strike: <strong id="live-strike" class="mono">Waiting for 09:25 IST</strong><br>
-                Live Unrealized Gross P&L: <strong id="live-upnl" class="mono">₹0.00</strong>
-            </div>
-
-            <div class="pos-grid">
-                <div class="leg-card">
-                    <div class="leg-title">CALL (CE) LEG</div>
-                    <div class="leg-val" id="disp-ce-val">ATM Leg</div>
-                    <div class="leg-status tag-win" id="disp-ce-status">SL: +30%</div>
-                </div>
-                <div class="leg-card">
-                    <div class="leg-title">PUT (PE) LEG</div>
-                    <div class="leg-val" id="disp-pe-val">ATM Leg</div>
-                    <div class="leg-status tag-win" id="disp-pe-status">SL: +30% / BE</div>
-                </div>
-            </div>
-
-            <div style="margin-top: 16px; padding: 12px; background: rgba(15,23,42,0.4); border-radius: 8px; font-size: 12px; color: var(--text-muted);">
-                🛡️ <strong>Quant Protection Active:</strong> If one leg stops out at 30%, the remaining leg automatically trails to Breakeven (0 loss).
-            </div>
-        </div>
-    </div>
-
-    <div class="table-box">
-        <div style="padding: 18px 20px; font-size: 15px; font-weight: 600; border-bottom: 1px solid var(--border);">
-            📋 Verified Daily Audit Journal (SQLite Store)
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Date</th>
-                    <th>ATM Strike</th>
-                    <th>Call Leg (CE)</th>
-                    <th>Put Leg (PE)</th>
-                    <th>Gross P&L</th>
-                    <th>Taxes & Fees</th>
-                    <th>Net In-Pocket P&L</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody id="trade-rows">
-                <!-- Dynamically loaded rows -->
-            </tbody>
-        </table>
-    </div>
-
-    <script>
-        async function updateDashboard() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-
-                document.getElementById('nifty-spot').innerText = data.spot.toFixed(2);
-                document.getElementById('server-time').innerText = data.server_time;
-
-                // Stats
-                document.getElementById('stat-capital').innerText = '₹' + data.current_capital.toLocaleString('en-IN', {minimumFractionDigits: 1});
-                document.getElementById('stat-profit').innerText = '+₹' + data.net_profit.toLocaleString('en-IN', {minimumFractionDigits: 1});
-                document.getElementById('stat-return').innerText = '+' + data.return_pct.toFixed(1) + '%';
-                document.getElementById('stat-winrate').innerText = data.win_rate.toFixed(1) + '%';
-                document.getElementById('stat-ratio').innerText = data.wins + ' Wins / ' + data.losses + ' Losses';
-                document.getElementById('stat-charges').innerText = '₹' + data.charges.toLocaleString('en-IN', {minimumFractionDigits: 1});
-
-                // Live Position State
-                if (data.live_state) {
-                    const ls = data.live_state;
-                    document.getElementById('live-badge-state').innerText = ls.state;
-                    document.getElementById('live-strike').innerText = `${ls.atm_strike} (Entry Spot: ${ls.spot_entry.toFixed(1)})`;
-                    const upnlEl = document.getElementById('live-upnl');
-                    upnlEl.innerText = (ls.unrealized_pnl >= 0 ? '+₹' : '-₹') + Math.abs(ls.unrealized_pnl).toFixed(2);
-                    upnlEl.className = 'mono ' + (ls.unrealized_pnl >= 0 ? 'positive' : 'negative');
-
-                    document.getElementById('disp-ce-val').innerText = `₹${ls.curr_ce.toFixed(1)} (Sold: ₹${ls.ce_entry.toFixed(1)})`;
-                    const ceSt = document.getElementById('disp-ce-status');
-                    ceSt.innerText = ls.ce_status;
-                    ceSt.className = 'leg-status ' + (ls.ce_status.includes('HIT') ? 'tag-loss' : 'tag-win');
-
-                    document.getElementById('disp-pe-val').innerText = `₹${ls.curr_pe.toFixed(1)} (Sold: ₹${ls.pe_entry.toFixed(1)})`;
-                    const peSt = document.getElementById('disp-pe-status');
-                    peSt.innerText = ls.pe_status;
-                    peSt.className = 'leg-status ' + (ls.pe_status.includes('HIT') ? 'tag-loss' : 'tag-win');
-                }
-
-                // Populate Trade Table
-                const tbody = document.getElementById('trade-rows');
-                tbody.innerHTML = '';
-                data.trades.forEach(t => {
-                    const tr = document.createElement('tr');
-                    const isWin = t.net_pnl > 0;
-                    tr.innerHTML = `
-                        <td>${t.date}</td>
-                        <td>${t.strike}</td>
-                        <td><span style="color: ${t.ce_status.includes('SL') ? 'var(--red)' : 'var(--green)'};">${t.ce_status}</span></td>
-                        <td><span style="color: ${t.pe_status.includes('SL') ? 'var(--red)' : 'var(--green)'};">${t.pe_status}</span></td>
-                        <td style="color: ${t.gross_pnl >= 0 ? 'var(--green)' : 'var(--red)'};">₹${t.gross_pnl > 0 ? '+' : ''}${t.gross_pnl.toFixed(1)}</td>
-                        <td style="color: var(--text-muted);">₹${t.charges.toFixed(1)}</td>
-                        <td style="font-weight: 700; color: ${isWin ? 'var(--green)' : 'var(--red)'};">₹${isWin ? '+' : ''}${t.net_pnl.toFixed(1)}</td>
-                        <td><span class="${isWin ? 'tag-win' : 'tag-loss'}">${isWin ? 'PROFIT' : 'LOSS'}</span></td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-
-                // Render Equity SVG Chart
-                renderChart(data.equity_points);
-
-            } catch (e) {
-                console.error("Dashboard update failed:", e);
-            }
-        }
-
-        function renderChart(points) {
-            if (!points || points.length < 2) return;
-            const svg = document.getElementById('svg-chart');
-            const W = 700, H = 200;
-            const minVal = Math.min(...points) - 500;
-            const maxVal = Math.max(...points) + 500;
-
-            const coords = points.map((val, idx) => {
-                const x = (idx / (points.length - 1)) * (W - 40) + 20;
-                const y = H - 30 - ((val - minVal) / (maxVal - minVal)) * (H - 50);
-                return {x, y};
-            });
-
-            let pathD = `M ${coords[0].x} ${coords[0].y}`;
-            coords.slice(1).forEach(pt => { pathD += ` L ${pt.x} ${pt.y}`; });
-
-            let areaD = `${pathD} L ${coords[coords.length-1].x} ${H} L ${coords[0].x} ${H} Z`;
-
-            svg.innerHTML = `
-                <defs>
-                    <linearGradient id="gradArea" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stop-color="#10B981" stop-opacity="0.25"/>
-                        <stop offset="100%" stop-color="#10B981" stop-opacity="0.0"/>
-                    </linearGradient>
-                </defs>
-                <path d="${areaD}" fill="url(#gradArea)"/>
-                <path d="${pathD}" fill="none" stroke="#10B981" stroke-width="2.5" stroke-linecap="round"/>
-                ${coords.map(pt => `<circle cx="${pt.x}" cy="${pt.y}" r="3" fill="#10B981"/>`).join('')}
-            `;
-        }
-
-        updateDashboard();
-        setInterval(updateDashboard, 4000); // Poll every 4 seconds
-    </script>
-</body>
-</html>
-"""
-
-class QuantHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/" or self.path == "/index.html":
-            self.send_response(200)
-            self.send_header("Content-type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
-        elif self.path == "/api/status":
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
 
-            # Query SQLite database for live status
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute("""
-            SELECT trade_date, atm_strike, ce_status, pe_status, gross_pnl, charges, net_pnl, lots
-            FROM daily_trades ORDER BY trade_date ASC
-            """)
-            rows = cur.fetchall()
-            conn.close()
-
-            capital = 50000.0
-            equity_points = [capital]
-            trades_list = []
-            gross_sum = 0.0
-            charges_sum = 0.0
-            net_sum = 0.0
-            wins = 0
-
-            for r in rows:
-                net_p = r[6]
-                gross_p = r[4]
-                chg = r[5]
-                capital += net_p
-                equity_points.append(capital)
-                gross_sum += gross_p
-                charges_sum += chg
-                net_sum += net_p
-                if net_p > 0:
-                    wins += 1
-
-                trades_list.append({
-                    "date": r[0],
-                    "strike": r[1],
-                    "ce_status": r[2],
-                    "pe_status": r[3],
-                    "gross_pnl": gross_p,
-                    "charges": chg,
-                    "net_pnl": net_p,
-                    "lots": r[7]
-                })
-
-            trades_list.reverse()  # Latest first for table
-            total_t = len(rows)
-            win_rate = (wins / total_t * 100.0) if total_t > 0 else 0.0
-            return_pct = ((capital - 50000.0) / 50000.0 * 100.0)
-
+        if path == "/api/dashboard":
+            data = load_dashboard_payload()
             live_spot = get_live_nifty_spot()
             live_state = get_live_state()
-            now = datetime.now()
-            now_str = now.strftime("%Y-%m-%d %H:%M:%S IST")
-            today_str = now.strftime("%Y-%m-%d")
+            token_file = os.path.expanduser("~/SoftKnack/platform/keys/upstox_token")
+            token_mtime = None
+            if os.path.exists(token_file):
+                token_mtime = datetime.fromtimestamp(os.path.getmtime(token_file)).strftime("%Y-%m-%d %H:%M IST")
 
-            # If live_state is not yet in DB for today, derive live position from today's order_audit_log
-            if not live_state or live_state.get("trade_date") != today_str:
-                conn = sqlite3.connect(DB_PATH)
-                cur = conn.cursor()
-                cur.execute("""
-                SELECT timestamp, action, message, spot_price
-                FROM order_audit_log
-                WHERE timestamp LIKE ?
-                ORDER BY id ASC
-                """, (f"{today_str}%",))
-                audit_rows = cur.fetchall()
-                conn.close()
+            self._send_json({
+                **data,
+                "live_spot": live_spot,
+                "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S IST"),
+                "upstox_token_updated_at": token_mtime,
+                "live_state": live_state,
+            })
+            return
 
-                if audit_rows:
-                    from options_model import calculate_option_price, get_atm_strike
-                    entry_row = next((r for r in audit_rows if r[1] == "ENTRY"), None)
-                    if entry_row:
-                        spot_entry = float(entry_row[3])
-                        atm_strike = get_atm_strike(spot_entry, step=50)
-                        base_tte = 2.0 / 365.0
-                        ce_entry = calculate_option_price(spot_entry, atm_strike, base_tte, option_type="CE")["price"]
-                        pe_entry = calculate_option_price(spot_entry, atm_strike, base_tte, option_type="PE")["price"]
-                        ce_sl = round(ce_entry * 1.30, 2)
-                        pe_sl = round(pe_entry * 1.30, 2)
+        if path == "/api/trades":
+            data = load_dashboard_payload()
+            strat_key = query.get("strategy", ["combined"])[0]
+            limit = int(query.get("limit", ["150"])[0])
+            strat = data.get("strategies", {}).get(strat_key) or data["strategies"]["combined"]
+            self._send_json({
+                "strategy": strat_key,
+                "title": strat["title"],
+                "trades": strat["recent_trades"][:limit],
+            })
+            return
 
-                        mins_past_open = max(0, (now.hour - 9) * 60 + (now.minute - 15))
-                        tte = max(0.0001, base_tte - (mins_past_open / (375.0 * 365.0)))
-                        curr_ce = calculate_option_price(live_spot, atm_strike, tte, option_type="CE")["price"]
-                        curr_pe = calculate_option_price(live_spot, atm_strike, tte, option_type="PE")["price"]
+        if path == "/api/pr-sundar-brain":
+            self._send_json(load_pr_sundar_brain())
+            return
 
-                        ce_status = f"ACTIVE (SL: ₹{ce_sl:.1f})"
-                        pe_status = f"ACTIVE (SL: ₹{pe_sl:.1f})"
-                        state_label = "ENTERED (LIVE)"
+        if path == "/api/pr-sundar-search":
+            q_str = query.get("q", [""])[0]
+            cat_str = query.get("category", ["all"])[0]
+            limit = int(query.get("limit", ["40"])[0])
+            self._send_json({
+                "query": q_str,
+                "category": cat_str,
+                "results": search_pr_sundar_db(q_str, cat_str, limit),
+            })
+            return
 
-                        for r in audit_rows:
-                            if r[1] == "SL_HIT" and "Call" in r[2]:
-                                ce_status = f"SL HIT ({r[2].split('at ')[-1]})"
-                                pe_status = f"ACTIVE (BE SL: ₹{pe_entry:.1f})"
-                            elif r[1] == "SL_HIT" and "Put" in r[2]:
-                                pe_status = f"SL HIT ({r[2].split('at ')[-1]})"
-                                ce_status = f"ACTIVE (BE SL: ₹{ce_entry:.1f})"
-                            elif r[1] == "EXIT":
-                                state_label = "SQUARED OFF"
-
-                        unrealized = round(((ce_entry - curr_ce) + (pe_entry - curr_pe)) * 50, 2)
-                        live_state = {
-                            "state": state_label,
-                            "trade_date": today_str,
-                            "atm_strike": atm_strike,
-                            "spot_entry": spot_entry,
-                            "current_spot": live_spot,
-                            "ce_entry": ce_entry,
-                            "curr_ce": curr_ce,
-                            "ce_sl": ce_sl,
-                            "ce_status": ce_status,
-                            "pe_entry": pe_entry,
-                            "curr_pe": curr_pe,
-                            "pe_sl": pe_sl,
-                            "pe_status": pe_status,
-                            "unrealized_pnl": unrealized
-                        }
-
-            response_payload = {
-                "server_time": now_str,
+        if path == "/api/status":
+            data = load_dashboard_payload()
+            comb = data["strategies"]["combined"]
+            live_spot = get_live_nifty_spot()
+            self._send_json({
+                "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S IST"),
                 "spot": live_spot,
-                "current_capital": round(capital, 2),
-                "net_profit": round(net_sum, 2),
-                "return_pct": round(return_pct, 1),
-                "total_trades": total_t,
-                "wins": wins,
-                "losses": total_t - wins,
-                "win_rate": round(win_rate, 1),
-                "gross_pnl": round(gross_sum, 2),
-                "charges": round(charges_sum, 2),
-                "equity_points": equity_points,
-                "trades": trades_list,
-                "live_state": live_state
-            }
-            self.wfile.write(json.dumps(response_payload).encode("utf-8"))
-        else:
-            self.send_error(404, "Not Found")
+                "current_capital": comb["ending_capital"],
+                "net_profit": comb["net_pnl"],
+                "return_pct": comb["return_pct"],
+                "total_trades": comb["total_trades"],
+                "wins": comb["wins"],
+                "losses": comb["losses"],
+                "win_rate": comb["win_rate"],
+                "gross_pnl": comb["gross_pnl"],
+                "charges": comb["charges"],
+                "equity_points": [pt["equity"] for pt in comb["equity_curve"]],
+                "trades": comb["recent_trades"][:50],
+                "live_state": get_live_state(),
+            })
+            return
+
+        # Serve static frontend from frontend/dist if available
+        if os.path.isdir(FRONTEND_DIST):
+            rel_path = path.lstrip("/") or "index.html"
+            candidate = os.path.join(FRONTEND_DIST, rel_path)
+            if not os.path.isfile(candidate):
+                candidate = os.path.join(FRONTEND_DIST, "index.html")
+            if os.path.isfile(candidate):
+                ctype, _ = mimetypes.guess_type(candidate)
+                with open(candidate, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", ctype or "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+        self._send_json({"message": "Antigravity Quant API Server Running. Use /api/dashboard or open Frontend on http://localhost:5173"}, status=200)
+
+    def log_message(self, fmt, *args):
+        pass
+
 
 def start_server():
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), QuantHandler) as httpd:
-        print(f"Quant Terminal Dashboard live at: http://localhost:{PORT}")
+    with socketserver.TCPServer(("", PORT), QuantAPIHandler) as httpd:
+        print(f"Clean Quant Backend API Server running at: http://localhost:{PORT}")
         httpd.serve_forever()
+
 
 if __name__ == "__main__":
     start_server()
