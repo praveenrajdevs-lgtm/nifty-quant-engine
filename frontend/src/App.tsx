@@ -176,8 +176,13 @@ interface DashboardPayload {
   strategies: Record<string, StrategyBundle>;
 }
 
-// Cleaned up: only high-performing modern & PR Sundar strategies (no cluttered legacy baselines in main view)
+// High-performing modern & institutional quant strategies + PR Sundar strategies
 const CORE_STRATEGIES = [
+  "inst_master_book",
+  "inst_vrp_strangle",
+  "inst_delta_rebalance",
+  "inst_skew_condor",
+  "inst_expiry_magnet",
   "dynamic_pr_sundar",
   "combined",
   "pr_sundar",
@@ -187,14 +192,39 @@ const CORE_STRATEGIES = [
 ] as const;
 
 const STRATEGY_LABELS: Record<string, { name: string; tag: string; desc: string }> = {
+  inst_master_book: {
+    name: "Master Institutional Prop Desk Book",
+    tag: "Flagship Prop • ₹4.68L Net",
+    desc: "VRP-Filtered Strangle + Intraday Delta Rebalancing + 0DTE Magnet + 7% Pledged G-Sec",
+  },
+  inst_vrp_strangle: {
+    name: "Institutional VRP-Filtered Strangle",
+    tag: "Quant Harvest • 84.0% Mo",
+    desc: "Variance Risk Premium: Trades only when IV - RV >= 1.5%. Bypasses whipsaw vol shocks.",
+  },
+  inst_delta_rebalance: {
+    name: "Institutional Delta-Neutral Straddle",
+    tag: "Dynamic Bands • 69.2% Mo",
+    desc: "ATM Straddle with dynamic 80-pt strike re-centering and 25% combined MTM SL",
+  },
+  inst_skew_condor: {
+    name: "Institutional Put-Skew Condor",
+    tag: "Skew Arbitrage",
+    desc: "Sells -150 PE vs +100 CE monetizing India's 25% Put-skew with deep 5-delta wing hedges",
+  },
+  inst_expiry_magnet: {
+    name: "0DTE Expiry Afternoon Pinning Magnet",
+    tag: "0DTE Pinning",
+    desc: "Fades over-extended spot moves beyond +/-45 pts from max-OI pin strike (13:15-15:15 PM)",
+  },
   dynamic_pr_sundar: {
     name: "Full Dynamic PR Sundar (4-Engine)",
-    tag: "92.3% Mo • Recommended",
+    tag: "92.3% Mo • PR Flagship",
     desc: "Weekly Strangle + Intraday Adaptive + 09:30 O=H/O=L Wall + 7% Collateral",
   },
   combined: {
     name: "Combined (#5 Weekly + #6 Intraday)",
-    tag: "Flagship 88.5% Mo",
+    tag: "88.5% Mo",
     desc: "Positional weekly strangle hedged with zero-overnight intraday adaptive straddles",
   },
   pr_sundar: {
